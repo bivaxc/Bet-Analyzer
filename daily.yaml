@@ -2,17 +2,17 @@ name: Daily Slips
 
 on:
   schedule:
-    - cron: "20 6 * * *"    # 06:20 UTC = 09:20 Kampala -> football slip
-    - cron: "20 13 * * *"   # 13:20 UTC = 16:20 Kampala -> basketball slip
+    - cron: "0 17 * * *"    # 17:00 UTC = 20:00 Kampala -> one message, both sports
   workflow_dispatch:         # manual run from the Actions tab
     inputs:
       sport:
-        description: "Which slip to send"
+        description: "What to send"
         type: choice
         options:
+          - both
           - football
           - basketball
-        default: football
+        default: both
 
 permissions:
   contents: write
@@ -30,20 +30,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Choose sport
-        id: sport
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            S="${{ github.event.inputs.sport }}"
-          elif [ "${{ github.event.schedule }}" = "20 13 * * *" ]; then
-            S="basketball"
-          else
-            S="football"
-          fi
-          echo "sport=$S" >> "$GITHUB_OUTPUT"
-
-      - name: Build and send slip
-        run: python daily_slip.py ${{ steps.sport.outputs.sport }}
+      - name: Build and send slips
+        run: python daily_slip.py ${{ github.event.inputs.sport }}
         env:
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}

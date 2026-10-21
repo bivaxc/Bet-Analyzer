@@ -41,6 +41,7 @@ FOOTBALL_MIN_EV = -0.02                     # min value per football leg
 BASKETBALL_MIN_EV = -0.04                   # basketball uses market odds, so slightly looser
 MAX_PREDICTION_CALLS = 25                   # protects the 100/day free football quota
 BASKETBALL_WINDOW_HOURS = 20                # games starting within this many hours
+FOOTBALL_DAYS_AHEAD = 1                     # 1 = pick tomorrow's matches, 0 = today's
 # =========================================================
 
 FB_BASE = "https://v3.football.api-sports.io"
@@ -92,8 +93,9 @@ def local_time(iso):
 
 # ---------------- football ----------------
 def football_legs(now):
-    date_str = now.strftime("%Y-%m-%d")
-    season = now.year if now.month >= 7 else now.year - 1
+    target = now + dt.timedelta(days=FOOTBALL_DAYS_AHEAD)
+    date_str = target.strftime("%Y-%m-%d")
+    season = target.year if target.month >= 7 else target.year - 1
 
     data = api(FB_BASE, "/fixtures", date=date_str, timezone=TZ)
     fixtures = [f for f in data.get("response", [])
@@ -271,6 +273,10 @@ def main():
     now = dt.datetime.now(ZoneInfo(TZ))
     date_str = now.strftime("%Y-%m-%d")
     title = sport.capitalize()
+    if sport == "football":
+        slip_date = (now + dt.timedelta(days=FOOTBALL_DAYS_AHEAD)).strftime("%Y-%m-%d")
+    else:
+        slip_date = date_str
 
     legs = []
     try:
@@ -284,13 +290,13 @@ def main():
     result = best_slip(pool) if len(pool) >= 2 else None
 
     if not result:
-        send(f"No qualifying {sport} slip today ({date_str}): nothing matched the "
+        send(f"No qualifying {sport} slip for {slip_date}: nothing matched the "
              f"{TARGET_MIN:.2f}-{TARGET_MAX:.2f} odds range with enough confidence. "
              f"Skipping a day is a valid decision.")
         return
 
     combo, total, prob = result
-    lines = [f"<b>{title} slip - {date_str}</b>", ""]
+    lines = [f"<b>{title} slip for {slip_date}</b>", ""]
     for i, leg in enumerate(combo, 1):
         basis = "model" if leg["basis"] == "model" else "market-implied"
         lines.append(
@@ -310,7 +316,7 @@ def main():
     send("\n".join(lines))
 
     save_history({
-        "date": date_str,
+        "date": slip_date,
         "sport": sport,
         "total_odds": round(total, 2),
         "est_prob": round(prob, 3),

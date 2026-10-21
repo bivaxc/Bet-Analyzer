@@ -35,10 +35,10 @@ BASKETBALL_LEAGUES = {                      # API-Basketball league ids
 
 PREFERRED_BOOKMAKERS = ["Bet365", "1xBet", "Pinnacle", "Betway"]
 TARGET_MIN, TARGET_MAX = 2.00, 2.50         # total slip odds
-LEG_MIN, LEG_MAX = 1.20, 1.60               # odds allowed per leg
-MIN_PROB = 0.58                             # min estimated win chance per leg
-FOOTBALL_MIN_EV = -0.02                     # min value per football leg
-BASKETBALL_MIN_EV = -0.04                   # basketball uses market odds, so slightly looser
+LEG_MIN, LEG_MAX = 1.15, 1.80               # odds allowed per leg
+MIN_PROB = 0.50                             # min estimated win chance per leg
+FOOTBALL_MIN_EV = -0.08                     # min value per football leg
+BASKETBALL_MIN_EV = -0.08                   # basketball uses market odds, so slightly looser
 MAX_PREDICTION_CALLS = 25                   # protects the 100/day free football quota
 BASKETBALL_WINDOW_HOURS = 20                # games starting within this many hours
 FOOTBALL_DAYS_AHEAD = 1                     # 1 = pick tomorrow's matches, 0 = today's
@@ -49,6 +49,9 @@ BB_BASE = "https://v1.basketball.api-sports.io"
 API_KEY = os.environ["API_FOOTBALL_KEY"]
 TG_TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
+
+
+STATS = {}  # counts shown in the 'no slip' message so you can see why
 
 
 # ---------------- helpers ----------------
@@ -102,6 +105,7 @@ def football_legs(now):
                 if f["league"]["id"] in FOOTBALL_LEAGUES
                 and f["fixture"]["status"]["short"] == "NS"]
     print(f"[football] {len(fixtures)} fixtures")
+    STATS["fixtures"] = len(fixtures)
     if not fixtures:
         return []
 
@@ -116,6 +120,9 @@ def football_legs(now):
                 break
             page += 1
 
+    STATS["with odds"] = sum(1 for f in fixtures if f["fixture"]["id"] in odds)
+    STATS["with predictions"] = 0
+    STATS["possible picks"] = 0
     legs, calls = [], 0
     for f in fixtures:
         fid = f["fixture"]["id"]
@@ -133,6 +140,7 @@ def football_legs(now):
             continue
         if not all(k in pct for k in ("home", "draw", "away")):
             continue
+        STATS["with predictions"] += 1
 
         home, away = f["teams"]["home"]["name"], f["teams"]["away"]["name"]
         cands = []
@@ -149,6 +157,7 @@ def football_legs(now):
             if "Draw/Away" in dc:
                 cands.append((f"{away} or draw", dc["Draw/Away"], pct["draw"] + pct["away"], bm))
 
+        STATS["possible picks"] += len(cands)
         good = []
         for label, odd, p, bm in cands:
             ev = p * odd - 1
@@ -180,6 +189,7 @@ def basketball_legs(now):
                 if 0 < hours <= BASKETBALL_WINDOW_HOURS:
                     games[g["id"]] = g
     print(f"[basketball] {len(games)} games in window")
+    STATS["games"] = len(games)
     if not games:
         return []
 
@@ -195,6 +205,7 @@ def basketball_legs(now):
                 break
             page += 1
 
+    STATS["with odds"] = sum(1 for gid in games if gid in odds)
     legs = []
     for gid, g in games.items():
         books = odds.get(gid)
@@ -241,7 +252,7 @@ def basketball_legs(now):
 # ---------------- slip building ----------------
 def best_slip(legs):
     best, best_score = None, -9
-    for n in (2, 3):
+    for n in (2, 3, 4):
         for combo in itertools.combinations(legs, n):
             total = prob = 1.0
             for leg in combo:
@@ -290,9 +301,10 @@ def main():
     result = best_slip(pool) if len(pool) >= 2 else None
 
     if not result:
+        info = ", ".join(f"{k}: {v}" for k, v in STATS.items()) or "no data"
         send(f"No qualifying {sport} slip for {slip_date}: nothing matched the "
-             f"{TARGET_MIN:.2f}-{TARGET_MAX:.2f} odds range with enough confidence. "
-             f"Skipping a day is a valid decision.")
+             f"{TARGET_MIN:.2f}-{TARGET_MAX:.2f} odds range.\n"
+             f"Debug -> {info}, legs passing filters: {len(legs)}")
         return
 
     combo, total, prob = result

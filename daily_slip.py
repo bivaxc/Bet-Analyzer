@@ -1,6 +1,6 @@
 """Daily top-matches bot (Sportmonks): football + cricket -> ONE Telegram message.
 
-No odds. Lists up to 8 matches per sport so you can make your own picks.
+No odds. Lists up to 6 matches per sport so you can make your own picks.
 Football: ranked by the standings gap between the two teams.
 Cricket: listed in order of start time.
 
@@ -17,7 +17,7 @@ import requests
 
 # ================= SETTINGS (edit these) =================
 TZ = "Africa/Kampala"
-TOP_N = 8                          # matches per sport
+TOP_N = 6                          # matches per sport
 FOOTBALL_DAYS_AHEAD = 1            # 1 = tomorrow's matches (Kampala date), 0 = today's
 CRICKET_WINDOW_HOURS = 36          # cricket matches starting within this many hours
 # =========================================================

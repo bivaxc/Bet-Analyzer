@@ -1,6 +1,7 @@
-"""Daily betslip bot (football slip and basketball slip, sent separately).
+"""Daily betslip bot (one message: football section + basketball section).
 
-Usage: python daily_slip.py football   |   python daily_slip.py basketball
+Usage: python daily_slip.py   (sends ONE message with a football and a basketball section)
+       python daily_slip.py football | basketball   (single sport, for testing)
 
 API-Sports data -> best 2-3 legs with total odds 2.00-2.50 -> Telegram.
 Needs env vars: API_FOOTBALL_KEY, TELEGRAM_TOKEN, CHAT_ID
@@ -51,6 +52,7 @@ TG_TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
 
 
+ERRORS = []  # API error messages, shown in the 'no slip' message
 STATS = {}  # counts shown in the 'no slip' message so you can see why
 
 
@@ -62,6 +64,8 @@ def api(base, endpoint, **params):
     data = r.json()
     if data.get("errors"):
         print("API error on", base, endpoint, data["errors"])
+        msg = str(data["errors"])[:150]
+        ERRORS.append(msg) if msg not in ERRORS else None
     return data
 
 
@@ -120,6 +124,16 @@ def football_legs(now):
                 break
             page += 1
 
+    # Fallback: ask for odds fixture by fixture when the league-wide call returned nothing
+    fallback_calls = 0
+    for f in fixtures:
+        fid = f["fixture"]["id"]
+        if fid not in odds and fallback_calls < 25:
+            d = api(FB_BASE, "/odds", fixture=fid)
+            fallback_calls += 1
+            for item in d.get("response", []):
+                odds[item["fixture"]["id"]] = item["bookmakers"]
+    STATS["odds calls"] = fallback_calls
     STATS["with odds"] = sum(1 for f in fixtures if f["fixture"]["id"] in odds)
     STATS["with predictions"] = 0
     STATS["possible picks"] = 0
@@ -276,39 +290,34 @@ def save_history(entry):
         json.dump(hist, f, indent=2)
 
 
-def main():
-    sport = (sys.argv[1] if len(sys.argv) > 1 else os.environ.get("SPORT", "football")).lower()
-    if sport not in ("football", "basketball"):
-        raise SystemExit("Usage: python daily_slip.py football|basketball")
-
-    now = dt.datetime.now(ZoneInfo(TZ))
-    date_str = now.strftime("%Y-%m-%d")
+def build_section(sport, now):
+    """Return (text, history_entry_or_None) for one sport."""
+    ERRORS.clear()
+    STATS.clear()
     title = sport.capitalize()
     if sport == "football":
         slip_date = (now + dt.timedelta(days=FOOTBALL_DAYS_AHEAD)).strftime("%Y-%m-%d")
     else:
-        slip_date = date_str
+        slip_date = now.strftime("%Y-%m-%d")
 
-    legs = []
     try:
         legs = football_legs(now) if sport == "football" else basketball_legs(now)
     except Exception as e:
         print(f"{title} failed:", repr(e))
-        send(f"{title} slip failed today ({date_str}). Check the GitHub Actions log.")
-        return
+        return f"<b>{title.upper()}</b>\nCould not load data today (see GitHub Actions log).", None
 
     pool = sorted(legs, key=lambda x: x["ev"], reverse=True)[:12]
     result = best_slip(pool) if len(pool) >= 2 else None
 
     if not result:
         info = ", ".join(f"{k}: {v}" for k, v in STATS.items()) or "no data"
-        send(f"No qualifying {sport} slip for {slip_date}: nothing matched the "
-             f"{TARGET_MIN:.2f}-{TARGET_MAX:.2f} odds range.\n"
-             f"Debug -> {info}, legs passing filters: {len(legs)}")
-        return
+        err = f"\nAPI errors: {' | '.join(ERRORS)}" if ERRORS else ""
+        return (f"<b>{title.upper()}</b>\nNo qualifying slip for {slip_date} "
+                f"in the {TARGET_MIN:.2f}-{TARGET_MAX:.2f} range.\n"
+                f"Debug -> {info}, legs passing filters: {len(legs)}{err}"), None
 
     combo, total, prob = result
-    lines = [f"<b>{title} slip for {slip_date}</b>", ""]
+    lines = [f"<b>{title.upper()} - {slip_date}</b>"]
     for i, leg in enumerate(combo, 1):
         basis = "model" if leg["basis"] == "model" else "market-implied"
         lines.append(
@@ -317,24 +326,40 @@ def main():
             f"   {html.escape(leg['league'])}, {local_time(leg['kickoff'])} EAT\n"
             f"   Win chance {leg['prob']*100:.0f}% ({basis}) | {html.escape(leg['bookmaker'])}"
         )
-    lines += [
-        "",
-        f"<b>Total odds: {total:.2f}</b>",
-        f"Estimated hit chance: {prob*100:.0f}%",
-        "",
-        "Check these odds on betPawa before betting; if the total leaves "
-        "2.00-2.50, swap a leg. Bet only what you can afford to lose.",
-    ]
-    send("\n".join(lines))
+    lines.append(f"<b>Total odds: {total:.2f}</b> | Est. hit chance {prob*100:.0f}%")
 
-    save_history({
+    entry = {
         "date": slip_date,
         "sport": sport,
         "total_odds": round(total, 2),
         "est_prob": round(prob, 3),
         "legs": [{k: leg[k] for k in ("id", "sport", "match", "pick", "odd", "prob")} for leg in combo],
         "result": "pending",
-    })
+    }
+    return "\n".join(lines), entry
+
+
+def main():
+    arg = (sys.argv[1] if len(sys.argv) > 1 else os.environ.get("SPORT", "both")).strip().lower()
+    if arg not in ("both", "football", "basketball", ""):
+        raise SystemExit("Usage: python daily_slip.py [both|football|basketball]")
+    sports = ["football", "basketball"] if arg in ("both", "") else [arg]
+
+    now = dt.datetime.now(ZoneInfo(TZ))
+    sections, entries = [], []
+    for sport in sports:
+        text, entry = build_section(sport, now)
+        sections.append(text)
+        if entry:
+            entries.append(entry)
+
+    footer = ("Check these odds on betPawa before betting; if a total leaves "
+              "2.00-2.50, swap a leg. Bet only what you can afford to lose.")
+    header = f"<b>Daily slips - {now.strftime('%a %d %b')}</b>"
+    send(header + "\n\n" + "\n\n-----\n\n".join(sections) + "\n\n" + footer)
+
+    for entry in entries:
+        save_history(entry)
 
 
 if __name__ == "__main__":
